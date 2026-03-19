@@ -134,6 +134,14 @@ async function handleExtract() {
   extractBtn.disabled = true;
   
   try {
+    // Always reset previous data first to prevent stale paste.
+    await chrome.storage.local.remove([
+      'extractedText',
+      'extractedImages',
+      'extractedFrom',
+      'extractedAt'
+    ]);
+
     let response;
     
     try {
@@ -171,19 +179,42 @@ async function handleExtract() {
     }
     
     if (response && response.success) {
-      // 추출된 데이터 저장
-      await chrome.storage.local.set({
-        extractedText: response.text,
-        extractedImages: response.images,
-        extractedFrom: currentSite.name,
-        extractedAt: new Date().toISOString()
+      const hasExtractedData = Boolean(response.text) || Boolean(response.images && response.images.length > 0);
+      if (!hasExtractedData) {
+        // Prevent stale data from being reused on paste.
+        await chrome.storage.local.remove([
+          'extractedText',
+          'extractedImages',
+          'extractedFrom',
+          'extractedAt'
+        ]);
+        showStatus('추출된 데이터가 없습니다. (기존 데이터 초기화됨)', '⚠️', 'error');
+        result.classList.add('hidden');
+        return;
+      }
+
+      // 이미지 저장 용량을 줄이기 위해 먼저 압축
+      const compressedImages = await compressImages(response.images || []);
+
+      // 추출된 데이터 저장 (quota 초과 시 이미지 수 자동 축소)
+      const saveResult = await saveExtractedDataSafely({
+        text: response.text,
+        images: compressedImages,
+        from: currentSite.name
       });
       
       showStatus('추출 완료!', '✅', 'success');
       showResult(
-        response.text ? response.text.length : 0,
-        response.images ? response.images.length : 0
+        saveResult.savedText ? saveResult.savedText.length : 0,
+        saveResult.savedImages ? saveResult.savedImages.length : 0
       );
+      if (saveResult.reduced) {
+        showStatus(
+          `저장 용량 제한으로 이미지 ${saveResult.originalImageCount}개 중 ${saveResult.savedImages.length}개만 저장됨`,
+          '⚠️',
+          'error'
+        );
+      }
     } else {
       showStatus(response?.error || '추출 실패', '❌', 'error');
     }
@@ -309,4 +340,85 @@ function showResult(textLen, imageLen) {
   result.classList.remove('hidden');
   textCount.textContent = textLen > 0 ? `${textLen}자` : '없음';
   imageCount.textContent = imageLen > 0 ? `${imageLen}개` : '없음';
+}
+
+function isQuotaExceededError(error) {
+  const msg = String(error?.message || error || '');
+  return msg.includes('QUOTA') || msg.includes('kQuotaBytes');
+}
+
+async function compressImages(images) {
+  const compressed = [];
+  for (const img of images) {
+    try {
+      const result = await compressOneImage(img, 800, 0.6);
+      compressed.push(result);
+    } catch (e) {
+      console.warn('이미지 압축 실패, 원본 사용:', e);
+      compressed.push(img);
+    }
+  }
+  return compressed;
+}
+
+function compressOneImage(base64, maxSize, quality) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width;
+      let h = img.height;
+
+      if (w > maxSize || h > maxSize) {
+        if (w > h) {
+          h = Math.round((h * maxSize) / w);
+          w = maxSize;
+        } else {
+          w = Math.round((w * maxSize) / h);
+          h = maxSize;
+        }
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const result = canvas.toDataURL('image/jpeg', quality);
+      resolve(result);
+    };
+    img.onerror = reject;
+    img.src = base64;
+  });
+}
+
+async function saveExtractedDataSafely({ text, images, from }) {
+  const originalImageCount = Array.isArray(images) ? images.length : 0;
+  let savedImages = Array.isArray(images) ? [...images] : [];
+  const savedText = text || '';
+
+  while (true) {
+    try {
+      await chrome.storage.local.set({
+        extractedText: savedText,
+        extractedImages: savedImages,
+        extractedFrom: from,
+        extractedAt: new Date().toISOString()
+      });
+      return {
+        savedText,
+        savedImages,
+        originalImageCount,
+        reduced: savedImages.length !== originalImageCount
+      };
+    } catch (error) {
+      if (!isQuotaExceededError(error)) throw error;
+      if (savedImages.length === 0) {
+        throw new Error('저장 용량 초과: 이미지를 저장할 수 없습니다.');
+      }
+      // Cut image payload progressively until storage succeeds.
+      const nextLen = Math.floor(savedImages.length / 2);
+      savedImages = savedImages.slice(0, Math.max(nextLen, 0));
+    }
+  }
 }

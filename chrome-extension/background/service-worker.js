@@ -42,6 +42,14 @@ chrome.commands.onCommand.addListener(async (command) => {
  */
 async function handleExtractCommand() {
   try {
+    // Always reset previous data first to prevent stale paste.
+    await chrome.storage.local.remove([
+      'extractedText',
+      'extractedImages',
+      'extractedFrom',
+      'extractedAt'
+    ]);
+
     // 현재 활성 탭 가져오기
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     
@@ -84,17 +92,35 @@ async function handleExtractCommand() {
     }
     
     if (response && response.success) {
-      // 데이터 저장
-      await chrome.storage.local.set({
-        extractedText: response.text,
-        extractedImages: response.images,
-        extractedFrom: siteInfo.name,
-        extractedAt: new Date().toISOString()
+      const hasExtractedData = Boolean(response.text) || Boolean(response.images && response.images.length > 0);
+      if (!hasExtractedData) {
+        await chrome.storage.local.remove([
+          'extractedText',
+          'extractedImages',
+          'extractedFrom',
+          'extractedAt'
+        ]);
+        showNotification('추출 실패', '추출된 데이터가 없어 기존 저장 데이터를 초기화했습니다.');
+        return;
+      }
+
+      // Use offscreen document to compress images for shortcut path too.
+      const compressedImages = await compressViaOffscreen(response.images || []);
+
+      // 데이터 저장 (quota 초과 시 이미지 수 자동 축소)
+      const saveResult = await saveExtractedDataSafely({
+        text: response.text,
+        images: compressedImages,
+        from: siteInfo.name
       });
       
-      const textLen = response.text ? response.text.length : 0;
-      const imgLen = response.images ? response.images.length : 0;
-      showNotification('추출 완료!', `텍스트: ${textLen}자, 이미지: ${imgLen}개`);
+      const textLen = saveResult.savedText ? saveResult.savedText.length : 0;
+      const imgLen = saveResult.savedImages ? saveResult.savedImages.length : 0;
+      let message = `텍스트: ${textLen}자, 이미지: ${imgLen}개`;
+      if (saveResult.reduced) {
+        message += ` (원본 ${saveResult.originalImageCount}개에서 축소 저장)`;
+      }
+      showNotification('추출 완료!', message);
     } else {
       showNotification('추출 실패', response?.error || '알 수 없는 오류');
     }
@@ -188,6 +214,11 @@ async function showNotification(title, message) {
 // 메시지 리스너
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('메시지 수신:', message);
+
+  // Offscreen compressor handles this action.
+  if (message?.action === 'compress') {
+    return false;
+  }
   
   switch (message.action) {
     case 'getStoredData':
@@ -250,6 +281,81 @@ async function handleClearData(sendResponse) {
     sendResponse({ success: true });
   } catch (error) {
     sendResponse({ success: false, error: error.message });
+  }
+}
+
+function isQuotaExceededError(error) {
+  const msg = String(error?.message || error || '');
+  return msg.includes('QUOTA') || msg.includes('kQuotaBytes');
+}
+
+let offscreenCreating = null;
+async function ensureOffscreenDocument() {
+  const url = chrome.runtime.getURL('offscreen.html');
+  const existing = await chrome.offscreen.hasDocument();
+  if (existing) return;
+  if (offscreenCreating) {
+    await offscreenCreating;
+    return;
+  }
+  offscreenCreating = chrome.offscreen.createDocument({
+    url,
+    reasons: ['BLOBS'],
+    justification: 'Compress images before saving to extension storage'
+  });
+  try {
+    await offscreenCreating;
+  } finally {
+    offscreenCreating = null;
+  }
+}
+
+async function compressViaOffscreen(images) {
+  try {
+    await ensureOffscreenDocument();
+    const response = await chrome.runtime.sendMessage({
+      action: 'compress',
+      images,
+      maxSize: 800,
+      quality: 0.6
+    });
+    if (response?.success && Array.isArray(response.compressed)) {
+      return response.compressed;
+    }
+    return images;
+  } catch (e) {
+    console.warn('offscreen compress fallback to original images:', e);
+    return images;
+  }
+}
+
+async function saveExtractedDataSafely({ text, images, from }) {
+  const originalImageCount = Array.isArray(images) ? images.length : 0;
+  let savedImages = Array.isArray(images) ? [...images] : [];
+  const savedText = text || '';
+
+  while (true) {
+    try {
+      await chrome.storage.local.set({
+        extractedText: savedText,
+        extractedImages: savedImages,
+        extractedFrom: from,
+        extractedAt: new Date().toISOString()
+      });
+      return {
+        savedText,
+        savedImages,
+        originalImageCount,
+        reduced: savedImages.length !== originalImageCount
+      };
+    } catch (error) {
+      if (!isQuotaExceededError(error)) throw error;
+      if (savedImages.length === 0) {
+        throw new Error('저장 용량 초과: 이미지를 저장할 수 없습니다.');
+      }
+      const nextLen = Math.floor(savedImages.length / 2);
+      savedImages = savedImages.slice(0, Math.max(nextLen, 0));
+    }
   }
 }
 

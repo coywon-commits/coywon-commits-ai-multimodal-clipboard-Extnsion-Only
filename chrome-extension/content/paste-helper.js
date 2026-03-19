@@ -97,14 +97,54 @@ function findInputElement() {
 }
 
 async function uploadImagesToFileInput(images) {
-  const input = findImageFileInput();
-  if (!input) {
-    return {
-      uploadedCount: 0,
-      warning: '이미지 업로드 입력(input[type=file])을 찾지 못했습니다.'
-    };
+  const input = await findImageFileInputWithReveal();
+  if (input) {
+    const direct = uploadImagesByFileInput(images, input);
+    if (direct.uploadedCount > 0) return direct;
   }
 
+  // Fallback 1: drop event on active input/editor area.
+  const dropFallback = uploadImagesByDropEvent(images);
+  if (dropFallback.uploadedCount > 0) return dropFallback;
+
+  // Fallback 2: synthetic paste event.
+  const pasteFallback = uploadImagesByPasteEvent(images);
+  if (pasteFallback.uploadedCount > 0) return pasteFallback;
+
+  return { uploadedCount: 0, warning: '이미지 업로드 경로를 찾지 못했습니다.' };
+}
+
+async function findImageFileInputWithReveal() {
+  let input = findImageFileInput();
+  if (input) return input;
+
+  // Try opening uploader UI first (ChatGPT/Claude/Gemini often lazy-render file inputs).
+  clickPotentialAttachButtons();
+  await sleep(380);
+  clickGeminiFileUploadMenuItem();
+  await sleep(380);
+  input = findImageFileInput();
+  if (input) return input;
+
+  // One more short retry for delayed render.
+  clickGeminiFileUploadMenuItem();
+  await sleep(380);
+  return findImageFileInput();
+}
+
+function findImageFileInput() {
+  const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+  if (inputs.length === 0) return null;
+
+  const imageInput = inputs.find((el) => {
+    const accept = (el.getAttribute('accept') || '').toLowerCase();
+    return accept.includes('image') || accept === '';
+  });
+
+  return imageInput || inputs[0];
+}
+
+function uploadImagesByFileInput(images, input) {
   const dt = new DataTransfer();
   let uploadedCount = 0;
 
@@ -122,20 +162,103 @@ async function uploadImagesToFileInput(images) {
   input.files = dt.files;
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
-
   return { uploadedCount, warning: '' };
 }
 
-function findImageFileInput() {
-  const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
-  if (inputs.length === 0) return null;
+function uploadImagesByDropEvent(images) {
+  const target = findInputElement();
+  if (!target) return { uploadedCount: 0, warning: 'drop target not found' };
 
-  const imageInput = inputs.find((el) => {
-    const accept = (el.getAttribute('accept') || '').toLowerCase();
-    return accept.includes('image') || accept === '';
+  const dt = new DataTransfer();
+  let uploadedCount = 0;
+  for (let i = 0; i < images.length; i += 1) {
+    const file = dataUrlToFile(images[i], i);
+    if (!file) continue;
+    dt.items.add(file);
+    uploadedCount += 1;
+  }
+  if (uploadedCount === 0) return { uploadedCount: 0, warning: 'image conversion failed' };
+
+  target.focus();
+  const dropEvent = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt });
+  target.dispatchEvent(dropEvent);
+  return { uploadedCount, warning: '' };
+}
+
+function clickPotentialAttachButtons() {
+  const selectors = [
+    'button[aria-label*="Upload"]',
+    'button[aria-label*="upload"]',
+    'button[aria-label*="image"]',
+    'button[aria-label*="Image"]',
+    'button[aria-label*="photo"]',
+    'button[aria-label*="Photo"]',
+    'button[aria-label*="file"]',
+    'button[aria-label*="첨부"]',
+    'button[aria-label*="업로드"]',
+    'button[aria-label*="사진"]',
+    'button[title*="Upload"]',
+    'button[title*="image"]',
+    'button[title*="photo"]',
+    'button[title*="첨부"]',
+    'button[title*="업로드"]'
+  ];
+
+  for (const selector of selectors) {
+    const button = document.querySelector(selector);
+    if (!button || !isElementVisible(button)) continue;
+    button.click();
+    return;
+  }
+}
+
+function clickGeminiFileUploadMenuItem() {
+  const candidates = Array.from(
+    document.querySelectorAll('[role="menuitem"], li, button, div')
+  );
+
+  const target = candidates.find((el) => {
+    if (!isElementVisible(el)) return false;
+    const text = (el.textContent || '').trim().toLowerCase();
+    return (
+      text === '파일 업로드' ||
+      text.includes('파일 업로드') ||
+      text === 'file upload' ||
+      text.includes('upload file')
+    );
   });
 
-  return imageInput || inputs[0];
+  if (target) {
+    target.click();
+  }
+}
+
+function uploadImagesByPasteEvent(images) {
+  const target = findInputElement();
+  if (!target) return { uploadedCount: 0, warning: '붙여넣기 대상 입력창을 찾지 못했습니다.' };
+
+  const dt = new DataTransfer();
+  let uploadedCount = 0;
+  for (let i = 0; i < images.length; i += 1) {
+    const file = dataUrlToFile(images[i], i);
+    if (!file) continue;
+    dt.items.add(file);
+    uploadedCount += 1;
+  }
+
+  if (uploadedCount === 0) {
+    return { uploadedCount: 0, warning: '이미지 데이터 변환에 실패했습니다.' };
+  }
+
+  target.focus();
+  const evt = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(evt, 'clipboardData', { value: dt });
+  target.dispatchEvent(evt);
+  return { uploadedCount, warning: '' };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function dataUrlToFile(dataUrl, index) {

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Privacy Policy – AI Clipboard</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 800px;
+      margin: 60px auto;
+      padding: 0 24px 80px;
+      color: #333;
+      line-height: 1.7;
+    }
+    h1 { font-size: 2rem; margin-bottom: 4px; }
+    h2 { font-size: 1.2rem; margin-top: 36px; color: #111; }
+    p, li { font-size: 0.97rem; color: #444; }
+    ul { padding-left: 20px; }
+    .updated { font-size: 0.85rem; color: #888; margin-bottom: 32px; }
+    a { color: #1a73e8; }
+  </style>
+</head>
+<body>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: March 19, 2026</p>
+
+  <p>
+    This Privacy Policy describes how <strong>AI Clipboard</strong> ("the Extension"),
+    developed by Coywon, handles user data. We are committed to protecting your privacy.
+  </p>
+
+  <h2>1. Overview</h2>
+  <p>
+    AI Clipboard is a Chrome browser extension that automatically detects and copies
+    AI-generated responses from supported AI platforms (such as ChatGPT and Claude)
+    to your clipboard. The Extension is designed to operate entirely on your local device.
+  </p>
+
+  <h2>2. Data We Do NOT Collect</h2>
+  <p>We do <strong>not</strong> collect, store, transmit, or share any of the following:</p>
+  <ul>
+    <li>Personal identification information (name, email, age, etc.)</li>
+    <li>Health or financial information</li>
+    <li>Authentication credentials</li>
+    <li>Browsing history or web activity</li>
+    <li>Location data</li>
+    <li>The content of AI responses you copy</li>
+  </ul>
+
+  <h2>3. How the Extension Works</h2>
+  <p>
+    When you activate the Extension on a supported AI platform page, a content script reads
+    the AI-generated response text directly from the page's DOM and writes it to your
+    system clipboard using the <code>clipboardWrite</code> API. This process happens
+    entirely on your device. No data is sent to any external server operated by us.
+  </p>
+
+  <h2>4. Permissions Used</h2>
+  <ul>
+    <li><strong>activeTab</strong> – Accesses the currently active tab only when you click the extension button.</li>
+    <li><strong>scripting</strong> – Injects a content script to read AI response text from the page DOM.</li>
+    <li><strong>storage</strong> – Saves your local preferences (e.g., enabled/disabled toggle) on your device only.</li>
+    <li><strong>clipboardWrite</strong> – Writes the extracted AI response to your clipboard.</li>
+    <li><strong>Host permissions</strong> – Limited to supported AI platform domains (e.g., chat.openai.com, claude.ai) necessary for the Extension's core function.</li>
+  </ul>
+
+  <h2>5. Local Storage</h2>
+  <p>
+    The Extension may store user preferences (such as whether auto-copy is enabled)
+    using Chrome's local storage API. This data never leaves your device and is not
+    accessible by us.
+  </p>
+
+  <h2>6. Third-Party Services</h2>
+  <p>
+    The Extension does not integrate with any third-party analytics, advertising, or
+    data collection services. It does not sell or transfer user data to any third party.
+  </p>
+
+  <h2>7. Children's Privacy</h2>
+  <p>
+    The Extension is not directed at children under the age of 13. We do not knowingly
+    collect any information from children.
+  </p>
+
+  <h2>8. Changes to This Policy</h2>
+  <p>
+    We may update this Privacy Policy from time to time. Any changes will be reflected
+    on this page with an updated date. Continued use of the Extension after changes
+    constitutes acceptance of the updated policy.
+  </p>
+
+  <h2>9. Contact</h2>
+  <p>
+    If you have any questions about this Privacy Policy, please contact us at:<br/>
+    <a href="mailto:coywon@gmail.com">coywon@gmail.com</a>
+  </p>
+</body>
+</html>
