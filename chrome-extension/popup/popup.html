@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Clipboard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📋 AI Clipboard</h1>
+      <p class="subtitle">텍스트 & 이미지 추출</p>
+    </header>
+    
+    <main>
+      <!-- 현재 사이트 정보 -->
+      <div id="site-info" class="site-info">
+        <span id="site-icon">🌐</span>
+        <span id="site-name">지원되지 않는 사이트</span>
+      </div>
+      
+      <!-- 추출 버튼 -->
+      <button id="extract-btn" class="btn btn-primary" disabled>
+        <span class="btn-icon">📥</span>
+        <span class="btn-text">추출하기</span>
+      </button>
+      
+      <!-- 상태 표시 -->
+      <div id="status" class="status hidden">
+        <div class="status-icon">⏳</div>
+        <div class="status-text">추출 중...</div>
+      </div>
+      
+      <!-- 결과 표시 -->
+      <div id="result" class="result hidden">
+        <div class="result-item">
+          <span class="result-label">📝 텍스트:</span>
+          <span id="text-count" class="result-value">0자</span>
+        </div>
+        <div class="result-item">
+          <span class="result-label">🖼️ 이미지:</span>
+          <span id="image-count" class="result-value">0개</span>
+        </div>
+      </div>
+      
+      <!-- 안내 메시지 -->
+      <div id="guide" class="guide">
+        <p>1. AI 채팅 페이지에서 추출 버튼 클릭</p>
+        <p>2. 다른 AI 채팅에서 <kbd>Ctrl+Shift+V</kbd></p>
+      </div>
+    </main>
+    
+    <footer>
+      <button id="clear-btn" class="btn btn-secondary" title="저장된 데이터 삭제">
+        🗑️ 초기화
+      </button>
+      <button id="settings-btn" class="btn btn-secondary" title="설정">
+        ⚙️
+      </button>
+    </footer>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>

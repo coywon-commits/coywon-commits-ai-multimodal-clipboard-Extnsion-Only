@@ -1,0 +1,6 @@
+### Extension-only local artifacts
+PROJECT_DUMP.txt
+*.log
+
+node_modules/
+

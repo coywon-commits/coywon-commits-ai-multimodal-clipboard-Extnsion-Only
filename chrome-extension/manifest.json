@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "AI Clipboard",
+  "version": "1.0.0",
+  "description": "Extract text and images from AI chats and paste into another AI chat.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "downloads",
+    "clipboardWrite",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*",
+    "https://www.perplexity.ai/*",
+    "http://127.0.0.1:5757/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "AI Clipboard"
+  },
+  "commands": {
+    "extract": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+O",
+        "mac": "Command+Shift+O"
+      },
+      "description": "Extract from current page"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
+      "js": ["content/chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content/claude.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content/gemini.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.perplexity.ai/*"],
+      "js": ["content/perplexity.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {}
+}
