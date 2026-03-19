@@ -2,14 +2,13 @@
  * AI Clipboard - 백그라운드 서비스 워커
  */
 
-const SERVER_URL = 'http://127.0.0.1:5757';
-
 // 지원 사이트 정보
 const SUPPORTED_SITES = {
   'chat.openai.com': { name: 'ChatGPT', script: 'content/chatgpt.js' },
   'chatgpt.com': { name: 'ChatGPT', script: 'content/chatgpt.js' },
   'claude.ai': { name: 'Claude', script: 'content/claude.js' },
   'gemini.google.com': { name: 'Gemini', script: 'content/gemini.js' },
+  'perplexity.ai': { name: 'Perplexity', script: 'content/perplexity.js' },
   'www.perplexity.ai': { name: 'Perplexity', script: 'content/perplexity.js' }
 };
 
@@ -33,6 +32,8 @@ chrome.commands.onCommand.addListener(async (command) => {
   
   if (command === 'extract') {
     await handleExtractCommand();
+  } else if (command === 'paste') {
+    await handlePasteCommand();
   }
 });
 
@@ -55,7 +56,7 @@ async function handleExtractCommand() {
     
     let siteInfo = null;
     for (const [domain, info] of Object.entries(SUPPORTED_SITES)) {
-      if (hostname.includes(domain) || hostname === domain) {
+      if (hostname === domain || hostname.endsWith(`.${domain}`)) {
         siteInfo = { domain, ...info };
         break;
       }
@@ -91,9 +92,6 @@ async function handleExtractCommand() {
         extractedAt: new Date().toISOString()
       });
       
-      // Python 앱으로 전송
-      await sendToPythonApp(response.text, response.images);
-      
       const textLen = response.text ? response.text.length : 0;
       const imgLen = response.images ? response.images.length : 0;
       showNotification('추출 완료!', `텍스트: ${textLen}자, 이미지: ${imgLen}개`);
@@ -107,33 +105,62 @@ async function handleExtractCommand() {
   }
 }
 
-/**
- * Python 앱으로 데이터 전송
- */
-async function sendToPythonApp(text, images) {
+async function handlePasteCommand() {
   try {
-    // 서버 상태 확인
-    const statusRes = await fetch(`${SERVER_URL}/status`, { method: 'GET' });
-    if (!statusRes.ok) {
-      console.warn('Python 앱이 실행되지 않음');
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url) {
+      showNotification('붙여넣기 실패', '탭 정보를 가져올 수 없습니다.');
       return;
     }
-    
-    // 데이터 전송
-    const data = {
-      text: text || '',
-      images: images || [],
-      extractedAt: new Date().toISOString()
+
+    const url = new URL(tab.url);
+    const hostname = url.hostname;
+
+    let siteInfo = null;
+    for (const [domain, info] of Object.entries(SUPPORTED_SITES)) {
+      if (hostname === domain || hostname.endsWith(`.${domain}`)) {
+        siteInfo = { domain, ...info };
+        break;
+      }
+    }
+
+    if (!siteInfo) {
+      showNotification('붙여넣기 실패', '지원되지 않는 사이트입니다.');
+      return;
+    }
+
+    const stored = await chrome.storage.local.get(['extractedText', 'extractedImages']);
+    const payload = {
+      text: stored.extractedText || '',
+      images: stored.extractedImages || []
     };
-    
-    await fetch(`${SERVER_URL}/data`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    
+
+    if (!payload.text && payload.images.length === 0) {
+      showNotification('붙여넣기 실패', '저장된 데이터가 없습니다.');
+      return;
+    }
+
+    let response;
+    try {
+      response = await chrome.tabs.sendMessage(tab.id, { action: 'paste', payload });
+    } catch (e) {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content/paste-helper.js', siteInfo.script]
+      });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      response = await chrome.tabs.sendMessage(tab.id, { action: 'paste', payload });
+    }
+
+    if (response?.success) {
+      const uploaded = response.uploadedCount || 0;
+      showNotification('붙여넣기 완료', `텍스트/이미지 반영 (${uploaded}개 업로드)`);
+    } else {
+      showNotification('붙여넣기 실패', response?.error || '알 수 없는 오류');
+    }
   } catch (error) {
-    console.warn('Python 앱 전송 실패:', error);
+    console.error('붙여넣기 명령 오류:', error);
+    showNotification('붙여넣기 실패', error.message);
   }
 }
 
@@ -226,9 +253,3 @@ async function handleClearData(sendResponse) {
   }
 }
 
-// 다운로드 완료 감지
-chrome.downloads.onChanged.addListener((delta) => {
-  if (delta.state && delta.state.current === 'complete') {
-    console.log('다운로드 완료:', delta.id);
-  }
-});

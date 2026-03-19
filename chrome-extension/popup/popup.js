@@ -8,6 +8,7 @@ const SUPPORTED_SITES = {
   'chatgpt.com': { name: 'ChatGPT', icon: '🤖' },
   'claude.ai': { name: 'Claude', icon: '🟠' },
   'gemini.google.com': { name: 'Gemini', icon: '✨' },
+  'perplexity.ai': { name: 'Perplexity', icon: '🔍' },
   'www.perplexity.ai': { name: 'Perplexity', icon: '🔍' }
 };
 
@@ -16,6 +17,7 @@ const siteInfo = document.getElementById('site-info');
 const siteIcon = document.getElementById('site-icon');
 const siteName = document.getElementById('site-name');
 const extractBtn = document.getElementById('extract-btn');
+const pasteBtn = document.getElementById('paste-btn');
 const status = document.getElementById('status');
 const statusIcon = status.querySelector('.status-icon');
 const statusText = status.querySelector('.status-text');
@@ -50,7 +52,7 @@ async function checkCurrentTab() {
       
       // 지원 사이트 확인
       for (const [domain, info] of Object.entries(SUPPORTED_SITES)) {
-        if (hostname.includes(domain) || hostname === domain) {
+        if (hostname === domain || hostname.endsWith(`.${domain}`)) {
           currentSite = { domain, ...info };
           break;
         }
@@ -73,12 +75,14 @@ function updateSiteInfo() {
     siteInfo.classList.add('supported');
     siteInfo.classList.remove('unsupported');
     extractBtn.disabled = false;
+    pasteBtn.disabled = false;
   } else {
     siteIcon.textContent = '🌐';
     siteName.textContent = '지원되지 않는 사이트';
     siteInfo.classList.add('unsupported');
     siteInfo.classList.remove('supported');
     extractBtn.disabled = true;
+    pasteBtn.disabled = true;
   }
 }
 
@@ -106,6 +110,9 @@ async function loadStoredData() {
 function setupEventListeners() {
   // 추출 버튼
   extractBtn.addEventListener('click', handleExtract);
+
+  // 붙여넣기 버튼
+  pasteBtn.addEventListener('click', handlePaste);
   
   // 초기화 버튼
   clearBtn.addEventListener('click', handleClear);
@@ -172,9 +179,6 @@ async function handleExtract() {
         extractedAt: new Date().toISOString()
       });
       
-      // 로컬 파일로 저장 (Python 앱용)
-      await saveToLocalStorage(response.text, response.images);
-      
       showStatus('추출 완료!', '✅', 'success');
       showResult(
         response.text ? response.text.length : 0,
@@ -192,50 +196,75 @@ async function handleExtract() {
 }
 
 /**
- * Python 앱으로 직접 전송
- * HTTP 서버를 통해 데이터 전송 (다운로드 대화상자 없음)
+ * 저장된 데이터 붙여넣기
  */
-async function saveToLocalStorage(text, images) {
-  const SERVER_URL = 'http://127.0.0.1:5757';
-  
+async function handlePaste() {
+  if (!currentTab || !currentSite) return;
+
+  showStatus('붙여넣기 중...', '⏳');
+  pasteBtn.disabled = true;
+
   try {
-    // 먼저 서버가 실행 중인지 확인
-    try {
-      const statusRes = await fetch(`${SERVER_URL}/status`, { method: 'GET' });
-      if (!statusRes.ok) {
-        throw new Error('서버 응답 없음');
-      }
-    } catch (e) {
-      console.warn('Python 앱이 실행되지 않음:', e);
-      showStatus('Python 앱을 먼저 실행하세요!', '⚠️', 'error');
+    const data = await chrome.storage.local.get(['extractedText', 'extractedImages']);
+    const payload = {
+      text: data.extractedText || '',
+      images: data.extractedImages || []
+    };
+
+    if (!payload.text && payload.images.length === 0) {
+      showStatus('먼저 추출을 실행하세요.', '⚠️', 'error');
       return;
     }
-    
-    // 데이터 전송
-    const data = {
-      text: text || '',
-      images: images || [],
-      extractedAt: new Date().toISOString()
-    };
-    
-    const response = await fetch(`${SERVER_URL}/data`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(data)
-    });
-    
-    if (!response.ok) {
-      throw new Error(`서버 오류: ${response.status}`);
+
+    let response;
+
+    try {
+      response = await chrome.tabs.sendMessage(currentTab.id, {
+        action: 'paste',
+        payload
+      });
+    } catch (e) {
+      // content script 주입 후 재시도
+      let scriptFile = 'content/chatgpt.js';
+      if (currentSite.domain.includes('claude')) {
+        scriptFile = 'content/claude.js';
+      } else if (currentSite.domain.includes('gemini')) {
+        scriptFile = 'content/gemini.js';
+      } else if (currentSite.domain.includes('perplexity')) {
+        scriptFile = 'content/perplexity.js';
+      }
+
+      await chrome.scripting.executeScript({
+        target: { tabId: currentTab.id },
+        files: ['content/paste-helper.js', scriptFile]
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      response = await chrome.tabs.sendMessage(currentTab.id, {
+        action: 'paste',
+        payload
+      });
     }
-    
-    const result = await response.json();
-    console.log('데이터 전송 성공:', result);
-    
+
+    if (response?.success) {
+      const textLabel = payload.text ? '텍스트 입력' : '텍스트 없음';
+      const imageLabel = payload.images.length > 0
+        ? `이미지 ${response.uploadedCount || 0}/${payload.images.length}개`
+        : '이미지 없음';
+
+      if (response.warning) {
+        showStatus(`${textLabel}, ${imageLabel} (${response.warning})`, '⚠️', 'error');
+      } else {
+        showStatus(`${textLabel}, ${imageLabel} 반영`, '✅', 'success');
+      }
+    } else {
+      showStatus(response?.error || '붙여넣기 실패', '❌', 'error');
+    }
   } catch (error) {
-    console.error('데이터 전송 오류:', error);
-    showStatus('전송 실패: ' + error.message, '❌', 'error');
+    console.error('붙여넣기 오류:', error);
+    showStatus('붙여넣기 실패: ' + error.message, '❌', 'error');
+  } finally {
+    pasteBtn.disabled = false;
   }
 }
 

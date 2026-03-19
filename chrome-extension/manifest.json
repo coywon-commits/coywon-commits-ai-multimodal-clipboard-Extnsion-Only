@@ -1,23 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "AI Clipboard",
-  "version": "1.0.0",
-  "description": "Extract text and images from AI chats and paste into another AI chat.",
+  "name": "AI Clipboard (Extension Only)",
+  "version": "2.0.0",
+  "description": "Extension-only: extract and paste text/images between AI chats.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "downloads",
-    "clipboardWrite",
-    "notifications"
+    "clipboardWrite"
   ],
   "host_permissions": [
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",
     "https://gemini.google.com/*",
-    "https://www.perplexity.ai/*",
-    "http://127.0.0.1:5757/*"
+    "https://perplexity.ai/*",
+    "https://www.perplexity.ai/*"
   ],
   "background": {
     "service_worker": "background/service-worker.js"
@@ -33,27 +31,34 @@
         "mac": "Command+Shift+O"
       },
       "description": "Extract from current page"
+    },
+    "paste": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Paste stored data to current page"
     }
   },
   "content_scripts": [
     {
       "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
-      "js": ["content/chatgpt.js"],
+      "js": ["content/paste-helper.js", "content/chatgpt.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://claude.ai/*"],
-      "js": ["content/claude.js"],
+      "js": ["content/paste-helper.js", "content/claude.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://gemini.google.com/*"],
-      "js": ["content/gemini.js"],
+      "js": ["content/paste-helper.js", "content/gemini.js"],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.perplexity.ai/*"],
-      "js": ["content/perplexity.js"],
+      "matches": ["https://perplexity.ai/*", "https://www.perplexity.ai/*"],
+      "js": ["content/paste-helper.js", "content/perplexity.js"],
       "run_at": "document_idle"
     }
   ],

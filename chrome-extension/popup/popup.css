@@ -106,6 +106,15 @@ main {
   transform: translateY(0);
 }
 
+.btn-paste {
+  margin-top: 8px;
+  background: linear-gradient(135deg, #00b894 0%, #00a37f 100%);
+}
+
+.btn-paste:hover:not(:disabled) {
+  box-shadow: 0 4px 12px rgba(0, 163, 127, 0.35);
+}
+
 .btn-secondary {
   background: #f5f5f5;
   color: #666;
