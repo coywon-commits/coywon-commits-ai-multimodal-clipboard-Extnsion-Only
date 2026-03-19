@@ -310,14 +310,14 @@ async function ensureOffscreenDocument() {
   }
 }
 
-async function compressViaOffscreen(images) {
+async function compressViaOffscreen(images, maxSize = 800, quality = 0.6) {
   try {
     await ensureOffscreenDocument();
     const response = await chrome.runtime.sendMessage({
       action: 'compress',
       images,
-      maxSize: 800,
-      quality: 0.6
+      maxSize,
+      quality
     });
     if (response?.success && Array.isArray(response.compressed)) {
       return response.compressed;
@@ -331,31 +331,67 @@ async function compressViaOffscreen(images) {
 
 async function saveExtractedDataSafely({ text, images, from }) {
   const originalImageCount = Array.isArray(images) ? images.length : 0;
-  let savedImages = Array.isArray(images) ? [...images] : [];
   const savedText = text || '';
+  let savedImages = Array.isArray(images) ? [...images] : [];
 
-  while (true) {
-    try {
-      await chrome.storage.local.set({
-        extractedText: savedText,
-        extractedImages: savedImages,
-        extractedFrom: from,
-        extractedAt: new Date().toISOString()
-      });
-      return {
-        savedText,
-        savedImages,
-        originalImageCount,
-        reduced: savedImages.length !== originalImageCount
-      };
-    } catch (error) {
-      if (!isQuotaExceededError(error)) throw error;
-      if (savedImages.length === 0) {
-        throw new Error('저장 용량 초과: 이미지를 저장할 수 없습니다.');
-      }
-      const nextLen = Math.floor(savedImages.length / 2);
-      savedImages = savedImages.slice(0, Math.max(nextLen, 0));
-    }
+  // Approximate bytes from data URL strings and text size.
+  const estimateBytes = (imgs) => {
+    const textBytes = savedText.length * 2;
+    const imageBytes = imgs.reduce((sum, img) => {
+      if (typeof img !== 'string') return sum;
+      return sum + img.length;
+    }, 0);
+    return textBytes + imageBytes;
+  };
+
+  const SAFE_LIMIT = 8 * 1024 * 1024;
+
+  // Stage 1: if estimated size is too large, re-compress more aggressively.
+  if (estimateBytes(savedImages) > SAFE_LIMIT) {
+    console.warn('Estimated payload too large, trying stronger compression');
+    savedImages = await compressViaOffscreen(savedImages, 400, 0.4);
   }
+
+  // Stage 2: if still large, remove the biggest images first.
+  while (estimateBytes(savedImages) > SAFE_LIMIT && savedImages.length > 0) {
+    savedImages.sort((a, b) => {
+      const lenA = typeof a === 'string' ? a.length : 0;
+      const lenB = typeof b === 'string' ? b.length : 0;
+      return lenB - lenA;
+    });
+    savedImages.shift();
+    console.warn(`Dropped one large image, remaining: ${savedImages.length}`);
+  }
+
+  // Stage 3: final save; if quota still fails, keep text only.
+  try {
+    await chrome.storage.local.set({
+      extractedText: savedText,
+      extractedImages: savedImages,
+      extractedFrom: from,
+      extractedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    if (!isQuotaExceededError(error)) throw error;
+    await chrome.storage.local.set({
+      extractedText: savedText,
+      extractedImages: [],
+      extractedFrom: from,
+      extractedAt: new Date().toISOString()
+    });
+    return {
+      savedText,
+      savedImages: [],
+      originalImageCount,
+      reduced: true
+    };
+  }
+
+  return {
+    savedText,
+    savedImages,
+    originalImageCount,
+    reduced: savedImages.length !== originalImageCount
+  };
 }
 

@@ -64,12 +64,27 @@ function insertTextToInput(text) {
   }
 
   if (input.isContentEditable) {
-    const oldText = input.innerText ? input.innerText.trim() : '';
-    const nextText = oldText ? `${oldText}\n${text}` : text;
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(input);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
 
-    input.innerText = nextText;
-    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const hasContent = (input.innerText || '').trim().length > 0;
+    const insertStr = hasContent ? `\n${text}` : text;
+    const ok = document.execCommand('insertText', false, insertStr);
+    if (ok) return true;
+
+    const current = (input.innerText || '').trim();
+    input.innerText = current ? `${current}\n${text}` : text;
+    input.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        data: text,
+        inputType: 'insertText'
+      })
+    );
     return true;
   }
 
@@ -77,6 +92,21 @@ function insertTextToInput(text) {
 }
 
 function findInputElement() {
+  if (isGeminiSite()) {
+    const richTextarea = document.querySelector('rich-textarea');
+    if (richTextarea) {
+      const inner =
+        richTextarea.querySelector('[contenteditable="true"]') ||
+        (richTextarea.shadowRoot ? richTextarea.shadowRoot.querySelector('[contenteditable="true"]') : null);
+      if (inner && isElementVisible(inner)) return inner;
+    }
+
+    const geminiComposer = document.querySelector(
+      '.ql-editor, [contenteditable="true"][aria-label], textarea'
+    );
+    if (geminiComposer && isElementVisible(geminiComposer)) return geminiComposer;
+  }
+
   const selectors = [
     '#prompt-textarea',
     'textarea',
@@ -114,25 +144,185 @@ async function uploadImagesToFileInput(images) {
   return { uploadedCount: 0, warning: '이미지 업로드 경로를 찾지 못했습니다.' };
 }
 
+async function uploadImagesToGeminiByPaste(images) {
+  const files = images.map((img, i) => imagePayloadToFile(img, i)).filter(Boolean);
+  if (files.length === 0) {
+    return { uploadedCount: 0, warning: '이미지 데이터 변환에 실패했습니다.' };
+  }
+
+  return new Promise(async (resolve) => {
+    let intercepted = false;
+    let cleaned = false;
+
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      document.removeEventListener('click', clickBlocker, true);
+      observer.disconnect();
+    };
+
+    const injectFiles = (input) => {
+      if (intercepted || !input) return;
+      intercepted = true;
+
+      const dt = new DataTransfer();
+      for (const f of files) dt.items.add(f);
+
+      Object.defineProperty(input, 'files', {
+        value: dt.files,
+        writable: false,
+        configurable: true
+      });
+
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      cleanup();
+      resolve({ uploadedCount: files.length, warning: '' });
+    };
+
+    const clickBlocker = (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (target.type !== 'file') return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      injectFiles(target);
+    };
+    document.addEventListener('click', clickBlocker, true);
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          const candidates =
+            node instanceof HTMLInputElement && node.type === 'file'
+              ? [node]
+              : Array.from(node.querySelectorAll('input[type="file"]'));
+
+          for (const input of candidates) {
+            input.addEventListener(
+              'click',
+              (e) => {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                injectFiles(input);
+              },
+              { capture: true, once: true }
+            );
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    await openGeminiUploadMenuAndSelectFileUpload();
+
+    setTimeout(() => {
+      cleanup();
+      if (!intercepted) {
+        resolve({ uploadedCount: 0, warning: 'Gemini 파일 입력창을 찾지 못했습니다.' });
+      }
+    }, 2000);
+  });
+}
+
 async function findImageFileInputWithReveal() {
+  if (isGeminiSite()) {
+    // 0) Prefer hidden Gemini file input already present in DOM.
+    let input = document.querySelector(
+      '[xapfileselectortrigger] input[type="file"], .hidden-local-file-image-selector-button input[type="file"], input[type="file"]'
+    );
+    if (input) return input;
+
+    // 1) Open menu button only (do not click "File upload" yet).
+    const menuBtn = document.querySelector('button[aria-label="파일 업로드 메뉴 열기"]');
+    if (menuBtn && isElementVisible(menuBtn)) {
+      menuBtn.click();
+      await sleep(420);
+    }
+
+    // 2) Re-check hidden input after menu opens.
+    input = document.querySelector(
+      '[xapfileselectortrigger] input[type="file"], .hidden-local-file-image-selector-button input[type="file"], input[type="file"]'
+    );
+    if (input) return input;
+
+    // 3) Last resort: intercept file-input click, then click menu item.
+    return new Promise((resolve) => {
+      const blocker = (e) => {
+        const target = e.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        if (target.type !== 'file') return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        document.removeEventListener('click', blocker, true);
+        resolve(target);
+      };
+
+      document.addEventListener('click', blocker, true);
+      clickGeminiFileUploadMenuItem();
+      setTimeout(() => {
+        document.removeEventListener('click', blocker, true);
+        resolve(null);
+      }, 2000);
+    });
+  }
+
   let input = findImageFileInput();
   if (input) return input;
 
-  // Try opening uploader UI first (ChatGPT/Claude/Gemini often lazy-render file inputs).
+  // Non-Gemini sites only.
   clickPotentialAttachButtons();
-  await sleep(380);
-  clickGeminiFileUploadMenuItem();
   await sleep(380);
   input = findImageFileInput();
   if (input) return input;
 
-  // One more short retry for delayed render.
-  clickGeminiFileUploadMenuItem();
+  clickPotentialAttachButtons();
   await sleep(380);
   return findImageFileInput();
 }
 
+function isGeminiSite() {
+  return location.hostname === 'gemini.google.com';
+}
+
+async function openGeminiUploadMenuAndSelectFileUpload() {
+  const uploadBtn = document.querySelector('button[aria-label="파일 업로드 메뉴 열기"]');
+  if (uploadBtn && isElementVisible(uploadBtn)) {
+    uploadBtn.click();
+    await sleep(420);
+  } else {
+    const openSelectors = [
+      'button[aria-label*="Upload"]',
+      'button[aria-label*="upload"]',
+      'button[aria-label*="파일"]',
+      'button[aria-label*="업로드"]',
+      'button[title*="Upload"]',
+      'button[title*="upload"]',
+      'button[title*="파일"]',
+      'button[title*="업로드"]'
+    ];
+    for (const selector of openSelectors) {
+      const button = document.querySelector(selector);
+      if (!button || !isElementVisible(button)) continue;
+      button.click();
+      break;
+    }
+    await sleep(420);
+  }
+
+  clickGeminiFileUploadMenuItem();
+  await sleep(420);
+}
+
 function findImageFileInput() {
+  if (isGeminiSite()) {
+    const geminiTrigger = document.querySelector(
+      '[xapfileselectortrigger] input[type="file"], .hidden-local-file-image-selector-button input[type="file"], button[xapfileselectortrigger] input[type="file"]'
+    );
+    if (geminiTrigger) return geminiTrigger;
+  }
+
   const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
   if (inputs.length === 0) return null;
 
@@ -166,7 +356,7 @@ function uploadImagesByFileInput(images, input) {
 }
 
 function uploadImagesByDropEvent(images) {
-  const target = findInputElement();
+  const target = findGeminiDropTarget() || findInputElement();
   if (!target) return { uploadedCount: 0, warning: 'drop target not found' };
 
   const dt = new DataTransfer();
@@ -183,6 +373,23 @@ function uploadImagesByDropEvent(images) {
   const dropEvent = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt });
   target.dispatchEvent(dropEvent);
   return { uploadedCount, warning: '' };
+}
+
+function findGeminiDropTarget() {
+  if (!isGeminiSite()) return null;
+
+  const selectors = [
+    'rich-textarea',
+    '[class*="composer"]',
+    '[class*="input"]',
+    'main'
+  ];
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (!el || !isElementVisible(el)) continue;
+    return el;
+  }
+  return null;
 }
 
 function clickPotentialAttachButtons() {
@@ -213,9 +420,7 @@ function clickPotentialAttachButtons() {
 }
 
 function clickGeminiFileUploadMenuItem() {
-  const candidates = Array.from(
-    document.querySelectorAll('[role="menuitem"], li, button, div')
-  );
+  const candidates = Array.from(document.querySelectorAll('[role="menuitem"], button'));
 
   const target = candidates.find((el) => {
     if (!isElementVisible(el)) return false;
@@ -223,8 +428,10 @@ function clickGeminiFileUploadMenuItem() {
     return (
       text === '파일 업로드' ||
       text.includes('파일 업로드') ||
+      text.includes('파일 추가') ||
       text === 'file upload' ||
-      text.includes('upload file')
+      text.includes('upload file') ||
+      text.includes('add file')
     );
   });
 
@@ -279,6 +486,35 @@ function dataUrlToFile(dataUrl, index) {
 
   const ext = mime.includes('jpeg') ? 'jpg' : 'png';
   return new File([bytes], `ai_clipboard_${String(index + 1).padStart(3, '0')}.${ext}`, { type: mime });
+}
+
+function imagePayloadToFile(image, index) {
+  if (typeof image === 'string') {
+    return dataUrlToFile(image, index);
+  }
+
+  if (!image || typeof image !== 'object') return null;
+  const base64 = typeof image.base64 === 'string' ? image.base64 : '';
+  if (!base64) return null;
+
+  const mime = typeof image.mimeType === 'string' && image.mimeType ? image.mimeType : 'image/png';
+  const filename =
+    typeof image.filename === 'string' && image.filename
+      ? image.filename
+      : `ai_clipboard_${String(index + 1).padStart(3, '0')}.png`;
+
+  try {
+    const binary = atob(base64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: mime });
+    return new File([blob], filename, { type: mime });
+  } catch (e) {
+    return null;
+  }
 }
 
 function isElementVisible(el) {

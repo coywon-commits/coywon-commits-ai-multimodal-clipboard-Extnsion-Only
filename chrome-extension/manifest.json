@@ -9,7 +9,8 @@
     "storage",
     "unlimitedStorage",
     "offscreen",
-    "clipboardWrite"
+    "clipboardWrite",
+    "clipboardRead"
   ],
   "host_permissions": [
     "https://chat.openai.com/*",
@@ -29,14 +30,14 @@
   "commands": {
     "extract": {
       "suggested_key": {
-        "default": "Ctrl+Shift+Y",
+        "default": "Alt+Shift+Q",
         "mac": "Command+Shift+Y"
       },
       "description": "Extract from current page"
     },
     "paste": {
       "suggested_key": {
-        "default": "Ctrl+Shift+L",
+        "default": "Alt+Shift+W",
         "mac": "Command+Shift+L"
       },
       "description": "Paste stored data to current page"
