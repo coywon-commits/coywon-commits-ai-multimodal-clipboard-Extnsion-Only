@@ -12,6 +12,78 @@ const SUPPORTED_SITES = {
   'www.perplexity.ai': { name: 'Perplexity', script: 'content/perplexity.js' }
 };
 
+const IDB_NAME = 'AIClipboard';
+const IDB_STORE = 'images';
+
+async function saveImagesToIDB(images) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      e.target.result.createObjectStore(IDB_STORE, { keyPath: 'id' });
+    };
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put({ id: 'latest', data: images });
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error || new Error('Failed to save images to IndexedDB'));
+      };
+    };
+    req.onerror = () => reject(req.error || new Error('Failed to open IndexedDB'));
+  });
+}
+
+async function loadImagesFromIDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      e.target.result.createObjectStore(IDB_STORE, { keyPath: 'id' });
+    };
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const getReq = tx.objectStore(IDB_STORE).get('latest');
+      getReq.onsuccess = () => {
+        db.close();
+        resolve(getReq.result?.data || []);
+      };
+      getReq.onerror = () => {
+        db.close();
+        reject(getReq.error || new Error('Failed to load images from IndexedDB'));
+      };
+    };
+    req.onerror = () => reject(req.error || new Error('Failed to open IndexedDB'));
+  });
+}
+
+async function clearIDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      e.target.result.createObjectStore(IDB_STORE, { keyPath: 'id' });
+    };
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).clear();
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error || new Error('Failed to clear IndexedDB'));
+      };
+    };
+    req.onerror = () => reject(req.error || new Error('Failed to open IndexedDB'));
+  });
+}
+
 // 확장 설치/업데이트 시
 chrome.runtime.onInstalled.addListener((details) => {
   console.log('AI Clipboard 확장 설치됨:', details.reason);
@@ -42,13 +114,13 @@ chrome.commands.onCommand.addListener(async (command) => {
  */
 async function handleExtractCommand() {
   try {
-    // Always reset previous data first to prevent stale paste.
+    // Reset previous data first to prevent stale paste.
     await chrome.storage.local.remove([
       'extractedText',
-      'extractedImages',
       'extractedFrom',
       'extractedAt'
     ]);
+    await clearIDB();
 
     // 현재 활성 탭 가져오기
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -92,35 +164,28 @@ async function handleExtractCommand() {
     }
     
     if (response && response.success) {
-      const hasExtractedData = Boolean(response.text) || Boolean(response.images && response.images.length > 0);
-      if (!hasExtractedData) {
-        await chrome.storage.local.remove([
-          'extractedText',
-          'extractedImages',
-          'extractedFrom',
-          'extractedAt'
-        ]);
-        showNotification('추출 실패', '추출된 데이터가 없어 기존 저장 데이터를 초기화했습니다.');
+      const hasData = Boolean(response.text) || Boolean(response.images && response.images.length > 0);
+      if (!hasData) {
+        showNotification('추출 실패', '추출된 데이터가 없습니다.');
         return;
       }
 
-      // Use offscreen document to compress images for shortcut path too.
+      // Compress images before saving to IndexedDB.
       const compressedImages = await compressViaOffscreen(response.images || []);
 
-      // 데이터 저장 (quota 초과 시 이미지 수 자동 축소)
-      const saveResult = await saveExtractedDataSafely({
-        text: response.text,
-        images: compressedImages,
-        from: siteInfo.name
+      // Images -> IndexedDB
+      await saveImagesToIDB(compressedImages);
+
+      // Text metadata -> storage
+      await chrome.storage.local.set({
+        extractedText: response.text || '',
+        extractedFrom: siteInfo.name,
+        extractedAt: new Date().toISOString()
       });
-      
-      const textLen = saveResult.savedText ? saveResult.savedText.length : 0;
-      const imgLen = saveResult.savedImages ? saveResult.savedImages.length : 0;
-      let message = `텍스트: ${textLen}자, 이미지: ${imgLen}개`;
-      if (saveResult.reduced) {
-        message += ` (원본 ${saveResult.originalImageCount}개에서 축소 저장)`;
-      }
-      showNotification('추출 완료!', message);
+
+      const textLen = response.text ? response.text.length : 0;
+      const imgLen = compressedImages.length;
+      showNotification('추출 완료!', `텍스트: ${textLen}자, 이미지: ${imgLen}개`);
     } else {
       showNotification('추출 실패', response?.error || '알 수 없는 오류');
     }
@@ -136,6 +201,10 @@ async function handlePasteCommand() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || !tab.url) {
       showNotification('붙여넣기 실패', '탭 정보를 가져올 수 없습니다.');
+      return;
+    }
+    if (tab.status !== 'complete') {
+      showNotification('붙여넣기 실패', '페이지 로딩 중입니다. 잠시 후 다시 시도해주세요.');
       return;
     }
 
@@ -155,14 +224,15 @@ async function handlePasteCommand() {
       return;
     }
 
-    const stored = await chrome.storage.local.get(['extractedText', 'extractedImages']);
+    const stored = await chrome.storage.local.get(['extractedText']);
+    const images = await loadImagesFromIDB();
     const payload = {
       text: stored.extractedText || '',
-      images: stored.extractedImages || []
+      images
     };
 
     if (!payload.text && payload.images.length === 0) {
-      showNotification('붙여넣기 실패', '저장된 데이터가 없습니다.');
+      showNotification('붙여넣기 실패', '저장된 데이터가 없습니다. 다시 추출해주세요.');
       return;
     }
 
