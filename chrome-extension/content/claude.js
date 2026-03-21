@@ -46,6 +46,130 @@ async function extractLatestInput() {
 }
 
 /**
+ * Walk DOM + open shadow roots (Claude often nests the composer UI in shadow DOM).
+ */
+function walkElementsDeep(root, callback) {
+  if (!root) return;
+  const stack = [root];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node) continue;
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      callback(node);
+      if (node.shadowRoot) {
+        stack.push(node.shadowRoot);
+      }
+    }
+    const children = node.childNodes;
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      stack.push(children[i]);
+    }
+  }
+}
+
+function collectImagesDeep(root) {
+  const imgs = [];
+  walkElementsDeep(root, (el) => {
+    if (el.tagName === 'IMG') imgs.push(el);
+  });
+  return imgs;
+}
+
+function getImgSrc(img) {
+  return (img.currentSrc || img.src || '').trim();
+}
+
+function isSmallIconButton(img) {
+  const btn = img.closest('button');
+  if (!btn) return false;
+  const r = btn.getBoundingClientRect();
+  return r.width < 48 && r.height < 48;
+}
+
+/**
+ * Pasted / pending uploads usually use blob: URLs; thumbnails can report 0x0 until decode.
+ */
+function isLikelyAttachmentImage(img) {
+  const src = getImgSrc(img);
+  if (!src || src.startsWith('chrome-extension')) return false;
+  if (src.includes('avatar') || src.includes('profile') || src.includes('favicon')) return false;
+
+  const r = img.getBoundingClientRect();
+  const area = Math.max(1, r.width) * Math.max(1, r.height);
+  const nw = img.naturalWidth || 0;
+  const nh = img.naturalHeight || 0;
+  const w = nw || r.width || 0;
+  const h = nh || r.height || 0;
+  if (area < 200 && w < 20 && h < 20) return false;
+  if (isSmallIconButton(img)) return false;
+
+  if (src.startsWith('blob:') || src.startsWith('data:')) return true;
+  if (r.bottom < window.innerHeight * 0.08) return false;
+  return w >= 32 || h >= 32 || area >= 800;
+}
+
+async function collectComposerImagesAggressive() {
+  const roots = [
+    document.querySelector('form'),
+    document.querySelector('[class*="composer"]'),
+    document.querySelector('[class*="Composer"]'),
+    document.querySelector('[class*="footer"]'),
+    document.querySelector('main'),
+    document.body
+  ].filter(Boolean);
+
+  const seen = new Set();
+  const out = [];
+
+  for (const root of roots) {
+    const imgs = collectImagesDeep(root);
+    for (const img of imgs) {
+      if (!isLikelyAttachmentImage(img)) continue;
+      const key = getImgSrc(img) || `${img.getBoundingClientRect().x},${img.getBoundingClientRect().y}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const dataUrl = await imageToDataUrl(img);
+      if (dataUrl && !out.includes(dataUrl)) out.push(dataUrl);
+    }
+  }
+
+  if (out.length > 0) return out;
+
+  const allImgs = collectImagesDeep(document.body);
+  for (const img of allImgs) {
+    const src = getImgSrc(img);
+    if (!src.startsWith('blob:') && !src.startsWith('data:')) continue;
+    if (!isLikelyAttachmentImage(img)) continue;
+    const dataUrl = await imageToDataUrl(img);
+    if (dataUrl && !out.includes(dataUrl)) out.push(dataUrl);
+  }
+
+  return out;
+}
+
+/**
+ * Some previews render as <canvas> instead of <img>.
+ */
+function collectComposerCanvases() {
+  const out = [];
+  const roots = [document.querySelector('main'), document.body].filter(Boolean);
+  for (const root of roots) {
+    walkElementsDeep(root, (el) => {
+      if (el.tagName !== 'CANVAS') return;
+      const r = el.getBoundingClientRect();
+      if (r.width < 40 || r.height < 40) return;
+      if (r.bottom < window.innerHeight * 0.08) return;
+      try {
+        out.push(el.toDataURL('image/png'));
+      } catch (e) {
+        /* tainted canvas */
+      }
+    });
+  }
+  return out;
+}
+
+/**
  * 입력창에서 추출
  */
 async function extractFromInputArea() {
@@ -62,28 +186,64 @@ async function extractFromInputArea() {
   
   let inputArea = null;
   for (const selector of inputSelectors) {
-    inputArea = document.querySelector(selector);
-    if (inputArea && inputArea.innerText.trim()) break;
+    const candidates = document.querySelectorAll(selector);
+    for (const el of candidates) {
+      if (el && (el.innerText.trim() || el.querySelector('img'))) {
+        inputArea = el;
+        break;
+      }
+    }
+    if (inputArea) break;
   }
   
   if (inputArea) {
     text = inputArea.innerText.trim();
   }
   
-  // 입력창 근처의 첨부된 이미지 찾기
-  const inputContainer = document.querySelector('form') || 
-                         document.querySelector('[class*="composer"]') ||
-                         document.querySelector('[class*="input-container"]');
-  
+  // Attached images near composer (Claude wraps previews in <button> — do not skip large preview buttons)
+  const inputContainer =
+    inputArea?.closest('form') ||
+    document.querySelector('form') ||
+    document.querySelector('[class*="composer"]') ||
+    document.querySelector('[class*="input-container"]') ||
+    document.querySelector('[data-testid*="composer"]') ||
+    document.querySelector('main');
+
   if (inputContainer) {
-    const attachedImages = inputContainer.querySelectorAll('img');
+    const attachedImages = collectImagesDeep(inputContainer);
     for (const img of attachedImages) {
-      if (img.width < 30 || img.height < 30) continue;
-      if (img.closest('button')) continue;
-      
+      if (!isLikelyAttachmentImage(img)) continue;
+
       const dataUrl = await imageToDataUrl(img);
-      if (dataUrl) images.push(dataUrl);
+      if (dataUrl && !images.includes(dataUrl)) images.push(dataUrl);
     }
+  }
+
+  // Fallback: some Claude layouts render attachment row outside the first container match
+  if (images.length === 0) {
+    const fallbackRoots = [
+      document.querySelector('main'),
+      document.body
+    ].filter(Boolean);
+    for (const root of fallbackRoots) {
+      for (const img of collectImagesDeep(root)) {
+        const src = getImgSrc(img);
+        if (!src.startsWith('blob:') && !src.startsWith('data:')) continue;
+        if (!isLikelyAttachmentImage(img)) continue;
+        const dataUrl = await imageToDataUrl(img);
+        if (dataUrl && !images.includes(dataUrl)) images.push(dataUrl);
+      }
+      if (images.length > 0) break;
+    }
+  }
+
+  if (images.length === 0) {
+    images = await collectComposerImagesAggressive();
+  }
+
+  if (images.length === 0) {
+    const canvases = collectComposerCanvases();
+    images = canvases.filter(Boolean);
   }
   
   return { text, images };
@@ -148,13 +308,18 @@ async function extractLastUserMessage() {
 async function imageToDataUrl(img) {
   return new Promise((resolve) => {
     try {
-      if (img.src.startsWith('data:')) {
-        resolve(img.src);
+      const src = getImgSrc(img);
+      if (!src) {
+        resolve(null);
+        return;
+      }
+      if (src.startsWith('data:')) {
+        resolve(src);
         return;
       }
       
-      if (img.src.startsWith('blob:')) {
-        fetch(img.src)
+      if (src.startsWith('blob:')) {
+        fetch(src)
           .then(res => res.blob())
           .then(blob => {
             const reader = new FileReader();
@@ -183,7 +348,7 @@ async function imageToDataUrl(img) {
       };
       
       newImg.onerror = () => resolve(null);
-      newImg.src = img.src;
+      newImg.src = src;
       
     } catch (error) {
       resolve(null);
